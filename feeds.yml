@@ -1,0 +1,17 @@
+sources:
+  - name: The Boston Globe
+    rss: https://www.bostonglobe.com/arc/outboundfeeds/feedly/?outputType=xml
+  - name: Boston.com
+    rss: https://www.boston.com/feed/bdc-msn-rss
+  - name: WBUR
+    rss: https://www.wbur.org/feed
+  - name: WCVB 5
+    rss: https://www.wcvb.com/topstories-rss
+  - name: NBC10 Boston
+    rss: https://www.nbcboston.com/feed/
+  - name: Boston Herald
+    rss: https://www.bostonherald.com/feed/
+  - name: Boston 25
+    rss: https://www.boston25news.com/arcio/rss/
+exclude_keywords: ["opinion","editorial","review","letters","commentary"]
+daily_limit_per_source: 6
