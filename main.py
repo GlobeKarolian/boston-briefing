@@ -6,23 +6,16 @@ import trafilatura
 from rapidfuzz import fuzz, process
 from email.utils import format_datetime
 
-# --------- Config from env ---------
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "").strip()
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "").strip()   # must be a real ElevenLabs voice ID
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()   # e.g., https://<user>.github.io/<repo>
+ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "").strip()
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "12"))
 
-if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID or not PUBLIC_BASE_URL:
-    print("Missing one of ELEVEN_API_KEY, ELEVEN_VOICE_ID, PUBLIC_BASE_URL.", file=sys.stderr)
-    # We still continue to build the site (no audio), so the workflow can surface error in logs.
-
-# --------- Paths ---------
 PUBLIC_DIR = "public"
 EP_DIR = os.path.join(PUBLIC_DIR, "episodes")
 os.makedirs(PUBLIC_DIR, exist_ok=True)
 os.makedirs(EP_DIR, exist_ok=True)
 
-# --------- Feeds ---------
 with open("feeds.yml", "r", encoding="utf-8") as f:
     feeds_cfg = yaml.safe_load(f)
 
@@ -66,7 +59,6 @@ def dedupe(items, threshold=90):
 
 def extract_text(url: str) -> str:
     try:
-        # Try trafilatura first
         downloaded = trafilatura.fetch_url(url, timeout=15)
         if downloaded:
             extracted = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
@@ -74,7 +66,6 @@ def extract_text(url: str) -> str:
                 return extracted
     except Exception:
         pass
-    # Fallback to readability
     try:
         html = requests.get(url, timeout=15, headers={"User-Agent":"Mozilla/5.0"}).text
         doc = Document(html); cleaned = doc.summary()
@@ -86,14 +77,12 @@ def extract_text(url: str) -> str:
         return ""
 
 def first_sentence(text: str) -> str:
-    # Extract a compact first sentence that's informative
     text = " ".join(text.split())
     for sep in [". ", " — ", " – ", " • "]:
         if sep in text:
             cand = text.split(sep)[0]
             if len(cand.split()) >= 8:
                 return cand.strip(".•–— ")
-    # fallback to truncation
     return text[:240].rsplit(" ",1)[0]
 
 def build_script(items):
@@ -111,7 +100,6 @@ def build_script(items):
             continue
         lines.append(f"According to {it['source']}: {sent}.")
         used += 1
-
     outro = "That’s the Boston Briefing. Links to all sources are on the website."
     full = intro + "\n\n" + "\n".join(lines) + "\n\n" + outro
     return full, lines
@@ -135,7 +123,6 @@ def tts_elevenlabs(text: str) -> bytes | None:
     return r.content
 
 def write_shownotes(date_str, items):
-    # Lightweight HTML with links to sources
     html = ["<html><head><meta charset='utf-8'><title>Boston Briefing – Sources</title></head><body>"]
     html.append(f"<h2>Boston Briefing – {date_str}</h2>")
     html.append("<ol>")
@@ -151,9 +138,9 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
     title = "Boston Briefing"
     desc = "A short, 100% factual morning news briefing for Greater Boston."
     link = PUBLIC_BASE_URL
-    last_build = format_datetime(pub_dt)
+    last_build = dt.datetime.now().astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
     item_title = pub_dt.strftime("Boston Briefing – %Y-%m-%d")
-    guid = episode_url
+    guid = episode_url or item_title
 
     feed = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
@@ -171,8 +158,8 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
       <description>{desc}</description>
       <link>{episode_url}</link>
       <guid isPermaLink="false">{guid}</guid>
-      <pubDate>{format_datetime(pub_dt)}</pubDate>
-      <enclosure url="{episode_url}" length="{filesize}" type="audio/mpeg"/>
+      <pubDate>{last_build}</pubDate>
+      {f'<enclosure url=\"{episode_url}\" length=\"{filesize}\" type=\"audio/mpeg\"/>' if episode_url else ''}
     </item>
   </channel>
 </rss>
@@ -197,11 +184,9 @@ def main():
     today = dt.datetime.now().astimezone()
     date_str = today.strftime("%Y-%m-%d")
 
-    # Shownotes with links
     write_shownotes(date_str, items)
     write_index()
 
-    # TTS (may be None if missing keys)
     mp3_bytes = None
     try:
         mp3_bytes = tts_elevenlabs(script)
@@ -217,7 +202,6 @@ def main():
         ep_url = f"{PUBLIC_BASE_URL}/episodes/{ep_name}"
         build_feed(ep_url, today, filesize)
     else:
-        # Build a minimal feed with no enclosure so you can see the site is live
         build_feed("", today, 0)
 
 if __name__ == "__main__":
