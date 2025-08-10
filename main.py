@@ -93,7 +93,7 @@ def build_script(items):
     for it in items:
         if used >= MAX_ITEMS: break
         txt = extract_text(it["link"])
-        if not txt: 
+        if not txt:
             continue
         sent = first_sentence(txt)
         if len(sent.split()) < 6:
@@ -138,32 +138,39 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
     title = "Boston Briefing"
     desc = "A short, 100% factual morning news briefing for Greater Boston."
     link = PUBLIC_BASE_URL
-    last_build = dt.datetime.now().astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
+    last_build = format_datetime(pub_dt)
     item_title = pub_dt.strftime("Boston Briefing – %Y-%m-%d")
     guid = episode_url or item_title
 
-    feed = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
-  <channel>
-    <title>{title}</title>
-    <link>{link}</link>
-    <language>en-us</language>
-    <description>{desc}</description>
-    <itunes:author>Boston Briefing</itunes:author>
-    <itunes:explicit>false</itunes:explicit>
-    <lastBuildDate>{last_build}</lastBuildDate>
+    # Build the enclosure separately (avoids nested f-string issues)
+    enclosure = ""
+    if episode_url:
+        enclosure = f'<enclosure url="{episode_url}" length="{filesize}" type="audio/mpeg"/>'
 
-    <item>
-      <title>{item_title}</title>
-      <description>{desc}</description>
-      <link>{episode_url}</link>
-      <guid isPermaLink="false">{guid}</guid>
-      <pubDate>{last_build}</pubDate>
-      {f'<enclosure url=\"{episode_url}\" length=\"{filesize}\" type=\"audio/mpeg\"/>' if episode_url else ''}
-    </item>
-  </channel>
-</rss>
-"""
+    feed = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">\n'
+        '  <channel>\n'
+        f'    <title>{title}</title>\n'
+        f'    <link>{link}</link>\n'
+        '    <language>en-us</language>\n'
+        f'    <description>{desc}</description>\n'
+        '    <itunes:author>Boston Briefing</itunes:author>\n'
+        '    <itunes:explicit>false</itunes:explicit>\n'
+        f'    <lastBuildDate>{last_build}</lastBuildDate>\n'
+        '\n'
+        '    <item>\n'
+        f'      <title>{item_title}</title>\n'
+        f'      <description>{desc}</description>\n'
+        f'      <link>{episode_url}</link>\n'
+        f'      <guid isPermaLink="false">{guid}</guid>\n'
+        f'      <pubDate>{format_datetime(pub_dt)}</pubDate>\n'
+        f'      {enclosure}\n'
+        '    </item>\n'
+        '  </channel>\n'
+        '</rss>\n'
+    )
+
     with open(os.path.join(PUBLIC_DIR, "feed.xml"), "w", encoding="utf-8") as f:
         f.write(feed)
 
