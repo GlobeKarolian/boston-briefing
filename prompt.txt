@@ -1,22 +1,16 @@
-Write an engaging 2–3 minute Boston audio news script based on today’s top stories, weather, and events.
+Write an engaging 2–3 minute Boston audio news script for today.
 
 Rules:
-- Begin with a natural, time-appropriate greeting based on the current time (morning, afternoon, or evening) and the date:
-  “Good {morning/afternoon/evening}, it’s {DAY OF WEEK}, {MONTH} {DAY}, {YEAR}. This is your Boston Briefing.”
-- Present the Boston-area weather forecast for the rest of the day (today’s high, low, and notable conditions).
-- Highlight any notable events happening in Boston today — concerts, sports, community gatherings — prioritizing information from Boston Globe, Boston.com, and B-Side.
-- Include 5–8 of the most important local news stories, each in 3–4 sentences, written in a natural, conversational style.
-- Attribution should be integrated seamlessly — as if a professional public radio host were speaking.  
-  Example: Instead of “According to Boston.com,” use “Boston.com says…,” “The Globe is reporting…,” or “B-Side’s newsletter notes…,” or work the source name naturally into the sentence.
-- Focus on clarity, pacing, and keeping the listener engaged — not on reading like a list of headlines.
-- Vary sentence length for a natural spoken rhythm.
-- Avoid speculation, filler, or overly formal phrasing.
-- End with: “That’s your Boston Briefing. Email Matt@Boston.com with feedback, and have a great day.”
+- Greet the listener appropriately based on the current Boston time (morning, afternoon, or evening) and the date.
+- Always lead with the most important and impactful news of the day. Sports should only lead if it is the single most important story.
+- Include 5–8 stories total, each with 2–4 sentences, written in a natural, conversational tone for a professional public radio audience.
+- Do not include any editorializing, sentiment, or sympathy (e.g., no “thoughts and prayers,” “we hope,” etc.).
+- Integrate source attributions naturally into the flow — e.g., “The Globe reports…”, “Boston.com says…”, “B-Side notes…” — and vary the phrasing.
+- Maintain a smooth narrative flow with light transitions so it feels like one continuous segment.
+- End with a quick Boston-area weather forecast and any notable events happening later today.
+- Close with: “That’s your Boston Briefing. Email Matt@Boston.com with feedback, and have a great day.”
+- After the closing, append: “This is part of an internal beta. All stories were summarized by AI, the script was AI-written, and the voice is an AI recreation of Matt Karolian’s voice. Please do not share externally.”
 
 Tone:
-- Warm, informed, and conversational.
-- Think professional public radio — polished but approachable, with personality and flow.
-
-Disclosure:
-- After the closing line, append:  
-  “This briefing was generated as part of an internal beta test. All stories were summarized by AI and this script was written by AI. The voice you are hearing is an AI recreation of Matt Karolian’s voice. Please do not share externally.”
+- Warm, professional, and conversational — think experienced public radio host.
+- Vary sentence length for a natural spoken rhythm.
