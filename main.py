@@ -1,4 +1,4 @@
-import os, sys, io, json, datetime as dt
+import os, sys, json, datetime as dt
 import feedparser, requests, yaml
 from bs4 import BeautifulSoup
 from readability import Document
@@ -6,13 +6,14 @@ import trafilatura
 from rapidfuzz import fuzz, process
 from email.utils import format_datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo  # stdlib tz support
 
 # ---------- Config ----------
 ELEVEN_API_KEY  = os.getenv("ELEVEN_API_KEY", "").strip()
 ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "").strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o").strip()
+OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o").strip()   # your secret overrides this
 MAX_ITEMS       = int(os.getenv("MAX_ITEMS", "12"))
 
 PUBLIC_DIR = Path("public")
@@ -66,6 +67,7 @@ def dedupe(items, threshold=90):
     return kept
 
 def extract_text(url: str) -> str:
+    # 1) trafilatura
     try:
         downloaded = trafilatura.fetch_url(url, timeout=20)
         if downloaded:
@@ -74,6 +76,7 @@ def extract_text(url: str) -> str:
                 return extracted
     except Exception:
         pass
+    # 2) readability
     try:
         html = requests.get(url, timeout=20, headers={"User-Agent":"Mozilla/5.0"}).text
         doc = Document(html)
@@ -95,12 +98,13 @@ def first_sentence(text: str) -> str:
     return text[:240].rsplit(" ",1)[0]
 
 def build_notes(items):
+    """Short factual notes with attribution + link. GPT will rewrite naturally."""
     notes = []
     used = 0
     for it in items:
         if used >= MAX_ITEMS: break
         txt = extract_text(it["link"])
-        if not txt: 
+        if not txt:
             continue
         sent = first_sentence(txt)
         if len(sent.split()) < 6:
@@ -108,6 +112,20 @@ def build_notes(items):
         notes.append(f"{it['source']}: {sent}  (link: {it['link']})")
         used += 1
     return notes
+
+def boston_now():
+    """Return Boston local time and greeting bucket."""
+    now = dt.datetime.now(ZoneInfo("America/New_York"))
+    hour = now.hour
+    if 5 <= hour < 12:
+        tod = "morning"
+    elif 12 <= hour < 18:
+        tod = "afternoon"
+    else:
+        tod = "evening"
+    # ‘Monday, August 11, 2025’ format without %-d for Windows compatibility
+    pretty_date = now.strftime("%A, %B ") + str(int(now.strftime("%d"))) + now.strftime(", %Y")
+    return now, tod, pretty_date
 
 # ---------- OpenAI ----------
 try:
@@ -118,24 +136,45 @@ except Exception as e:
     _client = None
 
 def _responses_api(prompt_text: str, notes: list[str], model: str) -> str:
-    user_block = "STORIES:\n" + "\n\n".join(notes)
+    # Compose a super-clear control preface to avoid editorializing & wrong greeting
+    now, tod, pretty_date = boston_now()
+    control = (
+        "HARD CONSTRAINTS (do not violate):\n"
+        f"- Time-of-day greeting MUST be: 'Good {tod}, it’s {pretty_date}.'\n"
+        "- Lead with the most important news; do NOT lead with sports unless it is indisputably the top story.\n"
+        "- Absolutely no editorializing, sympathy, or sentiment (no 'thoughts and prayers', 'we hope', etc.).\n"
+        "- Integrate source names naturally in the sentence (e.g., 'The Globe reports…', 'Boston.com says…', 'B-Side notes…').\n"
+        "- 5–8 items; smooth transitions; end with quick weather + notable events, then the disclosure.\n"
+    )
+    user_block = "STORIES (verbatim notes, may be messy):\n" + "\n\n".join(notes)
+    full_input = f"{control}\n\nUSER PROMPT:\n{prompt_text.strip()}\n\n{user_block}"
+
     resp = _client.responses.create(
         model=model,
-        input=f"{prompt_text.strip()}\n\n{user_block}",
-        temperature=0.4,
+        input=full_input,
+        temperature=0.35,
         max_output_tokens=1200,
     )
     return (getattr(resp, "output_text", None) or "").strip()
 
 def _chat_api(prompt_text: str, notes: list[str], model: str) -> str:
-    user_block = "STORIES:\n" + "\n\n".join(notes)
+    now, tod, pretty_date = boston_now()
+    control = (
+        "HARD CONSTRAINTS (do not violate):\n"
+        f"- Time-of-day greeting MUST be: 'Good {tod}, it’s {pretty_date}.'\n"
+        "- Lead with the most important news; do NOT lead with sports unless it is indisputably the top story.\n"
+        "- Absolutely no editorializing, sympathy, or sentiment (no 'thoughts and prayers', 'we hope', etc.).\n"
+        "- Integrate source names naturally in the sentence (e.g., 'The Globe reports…', 'Boston.com says…', 'B-Side notes…').\n"
+        "- 5–8 items; smooth transitions; end with quick weather + notable events, then the disclosure.\n"
+    )
+    user_block = "STORIES (verbatim notes, may be messy):\n" + "\n\n".join(notes)
     resp = _client.chat.completions.create(
         model=model,
         messages=[
-            {"role":"system","content":prompt_text},
-            {"role":"user","content":user_block},
+            {"role":"system","content":control},
+            {"role":"user","content":f"{prompt_text.strip()}\n\n{user_block}"},
         ],
-        temperature=0.4,
+        temperature=0.35,
         max_tokens=1200,
     )
     return resp.choices[0].message.content.strip()
@@ -150,13 +189,14 @@ def rewrite_with_openai(prompt_text: str, notes: list[str]) -> str | None:
             return _chat_api(prompt_text, notes, OPENAI_MODEL)
     except Exception as e:
         print(f"[warn] OpenAI error: {e}", file=sys.stderr)
+        # Fallback to gpt-4o so runs still succeed
         try:
             return _chat_api(prompt_text, notes, "gpt-4o")
         except Exception as e2:
             print(f"[warn] OpenAI fallback failed: {e2}", file=sys.stderr)
             return None
 
-# ---------- ElevenLabs ----------
+# ---------- ElevenLabs (updated settings for smoother flow) ----------
 def tts_elevenlabs(text: str) -> bytes | None:
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID or not text.strip():
         return None
@@ -164,11 +204,12 @@ def tts_elevenlabs(text: str) -> bytes | None:
     payload = {
         "text": text,
         "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.8,
-            "style": 0.35,
+            "stability": 0.55,          # smoother/steadier phrasing
+            "similarity_boost": 0.85,   # keep timbre close without overconstraining
+            "style": 0.40,              # light emphasis, avoids drawn-out syllables
             "use_speaker_boost": True
         },
+        "voice_speed": 1.05,           # mild pace-up to avoid rushy catch-ups
         "model_id": "eleven_multilingual_v2"
     }
     headers = {
@@ -176,7 +217,7 @@ def tts_elevenlabs(text: str) -> bytes | None:
         "accept": "audio/mpeg",
         "content-type": "application/json"
     }
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=90)
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
     r.raise_for_status()
     return r.content
 
@@ -205,7 +246,7 @@ def write_index():
 
 def build_feed(episode_url: str, filesize: int):
     title = "Boston Briefing"
-    desc  = "A short, 100% factual morning news briefing for Greater Boston."
+    desc  = "A short, factual Boston news briefing."
     link  = PUBLIC_BASE_URL or ""
     last_build = dt.datetime.now().astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
     item_title = dt.datetime.now().strftime("Boston Briefing – %Y-%m-%d")
@@ -222,7 +263,6 @@ def build_feed(episode_url: str, filesize: int):
         '    <itunes:author>Boston Briefing</itunes:author>',
         '    <itunes:explicit>false</itunes:explicit>',
         f'    <lastBuildDate>{last_build}</lastBuildDate>',
-        '',
         '    <item>',
         f'      <title>{item_title}</title>',
         f'      <description>{desc}</description>',
@@ -241,27 +281,42 @@ def build_feed(episode_url: str, filesize: int):
 def main():
     items = dedupe(fetch_items())
     notes = build_notes(items)
+
+    # Load your newsroom prompt (you keep editing this file)
     prompt_text = Path("prompt.txt").read_text(encoding="utf-8") if Path("prompt.txt").exists() else ""
+
+    # Try GPT rewrite (time-of-day constraints are injected inside the call)
     gpt_script = None
     if prompt_text and notes:
         gpt_script = rewrite_with_openai(prompt_text, notes)
-    # Your fallback: apology message if GPT fails
+
+    # If GPT fails/empty => apology audio (your request)
     if gpt_script and len(gpt_script.split()) > 20:
         final_script = gpt_script
     else:
-        final_script = "Ooops something went wrong, sorry about that, why don't you email Matt Karolian, so I can fix it."
+        final_script = (
+            "Ooops, something went wrong. Sorry about that. "
+            "Why don't you email Matt Karolian so I can fix it."
+        )
+
+    # Log the script for quick review
     print("\n--- SCRIPT TO READ ---\n")
     print(final_script.strip())
     print("\n--- END SCRIPT ---\n")
-    today = dt.datetime.now().astimezone()
+
+    # Site output
+    today = dt.datetime.now(ZoneInfo("America/New_York"))
     date_str = today.strftime("%Y-%m-%d")
     write_shownotes(date_str, items)
     write_index()
+
+    # TTS + feed
     mp3_bytes = None
     try:
         mp3_bytes = tts_elevenlabs(final_script)
     except Exception as ex:
         print(f"[warn] ElevenLabs error: {ex}", file=sys.stderr)
+
     ep_url = ""
     filesize = 0
     if mp3_bytes:
@@ -271,6 +326,7 @@ def main():
         filesize = len(mp3_bytes)
         if PUBLIC_BASE_URL:
             ep_url = f"{PUBLIC_BASE_URL}/episodes/{ep_name}"
+
     build_feed(ep_url, filesize)
 
 if __name__ == "__main__":
