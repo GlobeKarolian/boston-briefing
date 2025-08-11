@@ -6,8 +6,17 @@ import trafilatura
 from rapidfuzz import fuzz, process
 from email.utils import format_datetime
 
+# --- OpenAI (writer) ---
+from openai import OpenAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+# --- ElevenLabs (voice) ---
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "").strip()
 ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "").strip()
+
+# --- Site config ---
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "12"))
 
@@ -23,6 +32,9 @@ SOURCES = feeds_cfg.get("sources", [])
 EXCLUDE = set(k.lower() for k in feeds_cfg.get("exclude_keywords", []))
 LIMIT_PER = int(feeds_cfg.get("daily_limit_per_source", 6))
 
+# -----------------------------
+# Utilities: fetch & clean text
+# -----------------------------
 def is_newsworthy(title: str) -> bool:
     t = title.lower()
     return not any(k in t for k in EXCLUDE)
@@ -85,25 +97,93 @@ def first_sentence(text: str) -> str:
                 return cand.strip(".•–— ")
     return text[:240].rsplit(" ",1)[0]
 
+# -----------------------------
+# OpenAI rewrite (reads from prompt.txt)
+# -----------------------------
+def rewrite_with_openai(excerpts_text: str) -> str:
+    """
+    Turn raw factual snippets into a polished audio script.
+    Loads the prompt from prompt.txt so it can be tweaked without code changes.
+    """
+    if not client:
+        return ""
+    try:
+        today_str = dt.datetime.now().astimezone().strftime("%A, %B %-d, %Y")
+
+        # Load prompt from file
+        try:
+            with open("prompt.txt", "r", encoding="utf-8") as pf:
+                base_prompt = pf.read().strip()
+        except FileNotFoundError:
+            print("[warn] prompt.txt not found, using default prompt.", file=sys.stderr)
+            base_prompt = (
+                "Write a crisp 60–120 second audio script from these story notes.\n"
+                "- Start with the date and 'Here's your Boston Briefing.'\n"
+                "- 5–10 quick items, 1–2 sentences each, attribute sources.\n"
+                "- No opinions or speculation. Only facts present in the notes."
+            )
+
+        # Replace placeholder {DATE} if present
+        base_prompt = base_prompt.replace("{DATE}", today_str)
+
+        system = (
+            "You are a concise, strictly factual Boston morning news host. "
+            "Write a tight, natural-sounding script suitable for TTS."
+        )
+        user = f"{base_prompt}\n\nStory notes:\n{excerpts_text}"
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            max_tokens=900,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[warn] OpenAI error: {e}", file=sys.stderr)
+        return ""
+
+# -----------------------------
+# Script builder (uses OpenAI)
+# -----------------------------
 def build_script(items):
-    today = dt.datetime.now().astimezone()
-    intro = f"Good morning, it’s {today.strftime('%A, %B %-d, %Y')}. Here’s your Boston Briefing."
-    lines = []
+    notes = []
     used = 0
     for it in items:
-        if used >= MAX_ITEMS: break
+        if used >= MAX_ITEMS:
+            break
         txt = extract_text(it["link"])
         if not txt:
             continue
-        sent = first_sentence(txt)
-        if len(sent.split()) < 6:
+        para = (txt.split("\n")[0]).strip()
+        if len(para.split()) < 8:
+            para = first_sentence(txt)
+        if len(para.split()) < 8:
             continue
-        lines.append(f"According to {it['source']}: {sent}.")
+        notes.append(f"{it['source']}: {para}")
         used += 1
-    outro = "That’s the Boston Briefing. Links to all sources are on the website."
-    full = intro + "\n\n" + "\n".join(lines) + "\n\n" + outro
-    return full, lines
 
+    excerpts_text = "\n".join(notes)
+    ai_script = rewrite_with_openai(excerpts_text)
+    if ai_script:
+        return ai_script, notes
+
+    # fallback if no OpenAI result
+    today = dt.datetime.now().astimezone()
+    intro = f"Good morning, it’s {today.strftime('%A, %B %-d, %Y')}. Here’s your Boston Briefing."
+    lines = []
+    for n in notes:
+        src, body = n.split(":", 1)
+        lines.append(f"According to {src.strip()}: {body.strip()}.")
+    outro = "That’s the Boston Briefing. Links to all sources are on the website."
+    return intro + "\n\n" + "\n".join(lines) + "\n\n" + outro, notes
+
+# -----------------------------
+# ElevenLabs TTS
+# -----------------------------
 def tts_elevenlabs(text: str) -> bytes | None:
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
         return None
@@ -117,19 +197,19 @@ def tts_elevenlabs(text: str) -> bytes | None:
             "use_speaker_boost": True
         },
         "model_id": "eleven_multilingual_v2",
-        # If your account supports it, this speeds up delivery slightly:
-        # "voice_speed": 1.12
     }
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "accept": "audio/mpeg",
         "content-type": "application/json"
     }
-    # Increased timeout from 60 -> 180 seconds
     r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
     r.raise_for_status()
     return r.content
 
+# -----------------------------
+# Site output
+# -----------------------------
 def write_shownotes(date_str, items):
     html = ["<html><head><meta charset='utf-8'><title>Boston Briefing – Sources</title></head><body>"]
     html.append(f"<h2>Boston Briefing – {date_str}</h2>")
@@ -149,11 +229,9 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
     last_build = format_datetime(pub_dt)
     item_title = pub_dt.strftime("Boston Briefing – %Y-%m-%d")
     guid = episode_url or item_title
-
     enclosure = ""
     if episode_url:
         enclosure = f'<enclosure url="{episode_url}" length="{filesize}" type="audio/mpeg"/>'
-
     feed = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">\n'
@@ -165,7 +243,6 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
         '    <itunes:author>Boston Briefing</itunes:author>\n'
         '    <itunes:explicit>false</itunes:explicit>\n'
         f'    <lastBuildDate>{last_build}</lastBuildDate>\n'
-        '\n'
         '    <item>\n'
         f'      <title>{item_title}</title>\n'
         f'      <description>{desc}</description>\n'
@@ -177,7 +254,6 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
         '  </channel>\n'
         '</rss>\n'
     )
-
     with open(os.path.join(PUBLIC_DIR, "feed.xml"), "w", encoding="utf-8") as f:
         f.write(feed)
 
@@ -191,14 +267,17 @@ def write_index():
     with open(os.path.join(PUBLIC_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
+# -----------------------------
+# Main
+# -----------------------------
 def main():
     items = fetch_items()
     items = dedupe(items)
-    script, _lines = build_script(items)
+    script, notes = build_script(items)
     today = dt.datetime.now().astimezone()
     date_str = today.strftime("%Y-%m-%d")
 
-    # NEW: show and save the script so you can review it
+    # Show & save the script
     print("\n--- SCRIPT TO READ ---\n")
     print(script)
     print("\n--- END SCRIPT ---\n")
