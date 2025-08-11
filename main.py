@@ -1,30 +1,34 @@
 import os, sys, io, json, datetime as dt
-from zoneinfo import ZoneInfo
 import feedparser, requests, yaml
 from bs4 import BeautifulSoup
 from readability import Document
 import trafilatura
 from rapidfuzz import fuzz, process
-from email.utils import format_datetime
 
 # ---------- Config via env ----------
-ELEVEN_API_KEY  = os.getenv("ELEVEN_API_KEY", "").strip()
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "").strip()
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
+ELEVEN_API_KEY   = os.getenv("ELEVEN_API_KEY", "").strip()
+ELEVEN_VOICE_ID  = os.getenv("ELEVEN_VOICE_ID", "").strip()
+PUBLIC_BASE_URL  = os.getenv("PUBLIC_BASE_URL", "").strip()  # e.g. https://globekarolian.github.io/boston-briefing
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL     = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()  # set in repo secrets; switch later if you want
+MAX_ITEMS        = int(os.getenv("MAX_ITEMS", "12"))
 
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "").strip()
-# Use whatever you set in repo secret OPENAI_MODEL (e.g., "gpt-4o" or your preferred model)
-OPENAI_MODEL    = os.getenv("OPENAI_MODEL", "gpt-4o").strip()
+# ElevenLabs tuning (safe defaults; adjust in small steps)
+EL_STABILITY         = float(os.getenv("EL_STABILITY", "0.65"))
+EL_SIMILARITY_BOOST  = float(os.getenv("EL_SIMILARITY_BOOST", "0.7"))
+EL_STYLE             = float(os.getenv("EL_STYLE", "0.25"))
+EL_USE_SPEAKER_BOOST = bool(int(os.getenv("EL_SPEAKER_BOOST", "1")))
+EL_SPEED             = float(os.getenv("EL_SPEED", "1.08"))  # slightly brisker for news
 
-MAX_ITEMS       = int(os.getenv("MAX_ITEMS", "12"))
-
-# ---------- Paths ----------
+# ---------- Folders ----------
 PUBLIC_DIR = "public"
 EP_DIR     = os.path.join(PUBLIC_DIR, "episodes")
+DEBUG_DIR  = os.path.join(PUBLIC_DIR, "debug")
 os.makedirs(PUBLIC_DIR, exist_ok=True)
 os.makedirs(EP_DIR, exist_ok=True)
+os.makedirs(DEBUG_DIR, exist_ok=True)
 
-# ---------- Load feeds config ----------
+# ---------- Feeds config ----------
 with open("feeds.yml", "r", encoding="utf-8") as f:
     feeds_cfg = yaml.safe_load(f)
 
@@ -32,27 +36,27 @@ SOURCES    = feeds_cfg.get("sources", [])
 EXCLUDE    = set(k.lower() for k in feeds_cfg.get("exclude_keywords", []))
 LIMIT_PER  = int(feeds_cfg.get("daily_limit_per_source", 6))
 
+# ---------- Helpers ----------
 def is_newsworthy(title: str) -> bool:
-    t = title.lower()
-    return not any(k in t for k in EXCLUDE)
+    t = (title or "").lower()
+    return bool(t) and not any(k in t for k in EXCLUDE)
 
 def fetch_items():
     items = []
     for src in SOURCES:
         name, rss = src.get("name","Unknown"), src.get("rss","")
-        if not rss:
+        if not rss: 
             continue
         try:
             fp = feedparser.parse(rss)
             count = 0
             for e in fp.entries:
-                if count >= LIMIT_PER:
-                    break
+                if count >= LIMIT_PER: break
                 title = (e.get("title") or "").strip()
-                link  = (e.get("link") or "").strip()
-                if not title or not link:
+                link = (e.get("link") or "").strip()
+                if not title or not link: 
                     continue
-                if not is_newsworthy(title):
+                if not is_newsworthy(title): 
                     continue
                 items.append({"source": name, "title": title, "link": link})
                 count += 1
@@ -71,7 +75,7 @@ def dedupe(items, threshold=90):
     return kept
 
 def extract_text(url: str) -> str:
-    # Try trafilatura
+    # 1) trafilatura (fast & clean when it works)
     try:
         downloaded = trafilatura.fetch_url(url, timeout=15)
         if downloaded:
@@ -80,7 +84,7 @@ def extract_text(url: str) -> str:
                 return extracted
     except Exception:
         pass
-    # Fallback: readability first paragraphs
+    # 2) readability as fallback
     try:
         html = requests.get(url, timeout=15, headers={"User-Agent":"Mozilla/5.0"}).text
         doc = Document(html)
@@ -94,231 +98,263 @@ def extract_text(url: str) -> str:
 
 def first_sentence(text: str) -> str:
     text = " ".join(text.split())
-    # Try common sentence or clause breaks
-    for sep in [". ", "? ", "! ", " — ", " – ", " • "]:
+    # Try sentence-ish breaks; prefer ≥8 words to avoid fragments
+    for sep in [". ", "… ", " — ", " – ", " • ", "? ", "! "]:
         if sep in text:
             cand = text.split(sep)[0]
             if len(cand.split()) >= 8:
-                return cand.strip(".•–— ")
-    # Fallback: truncate
-    return text[:240].rsplit(" ",1)[0]
+                return cand.strip(".•–—?! ")
+    # Fallback truncate
+    cut = text[:280].rsplit(" ", 1)[0]
+    return cut
 
-def load_prompt(base_prompt_path="prompt.txt", date_label="", tod_label=""):
+def greeting_and_dateline(now: dt.datetime):
+    # Human greeting based on local time
+    hour = now.hour
+    if   5 <= hour < 12:  greet = "Good morning"
+    elif 12 <= hour < 17: greet = "Good afternoon"
+    elif 17 <= hour < 22: greet = "Good evening"
+    else:                 greet = "Hello"
+    # Dateline like: Monday, August 11, 2025
+    # Use platform-independent day formatting (avoid %-d on Windows)
+    day_num = str(now.day)
+    date_line = f"{now.strftime('%A')}, {now.strftime('%B')} {day_num}, {now.year}"
+    return greet, date_line
+
+def load_prompt():
     try:
-        with open(base_prompt_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-    except FileNotFoundError:
-        # Basic guard if file missing
-        raw = (
-            "Write a concise script for a short factual Boston news audio briefing. "
-            "No opinions. Attribute naturally to sources. Start with a natural greeting for {TOD}. "
-            "Date: {DATE}. Use most-important-first ordering. End with a brief disclosure."
-        )
-    return raw.replace("{DATE}", date_label).replace("{TOD}", tod_label)
+        with open("prompt.txt", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
-def notes_block(items):
-    # Build a compact notes section with (source) title + first sentence from article
-    lines = []
-    used = 0
-    for it in items:
-        if used >= MAX_ITEMS:
-            break
-        body = extract_text(it["link"])
-        if not body:
-            continue
-        lead = first_sentence(body)
-        if len(lead.split()) < 6:
-            continue
-        # Keep it factual and compact; model will smooth and order
-        lines.append(f"- {it['title']} — Source: {it['source']} — First line: {lead}")
-        used += 1
-    return "\n".join(lines), used
-
-# -------------- OpenAI (Responses API) --------------
-def draft_with_openai(prompt_text: str, notes: str) -> str:
+# ---------- OpenAI (Responses API) ----------
+def generate_script_with_openai(outlines: str, date_line: str, greeting: str) -> str:
     if not OPENAI_API_KEY:
-        print("[warn] No OPENAI_API_KEY; skipping LLM script", file=sys.stderr)
-        return ""
+        raise RuntimeError("Missing OPENAI_API_KEY")
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-        # Compose a single user message (prompt + notes)
-        user_input = f"{prompt_text}\n\n# Story notes\n{notes}\n"
-        resp = client.responses.create(
-            model=OPENAI_MODEL,
-            input=[{"role": "user", "content": user_input}],
-            max_output_tokens=1200  # leave temperature out (not supported by some models)
-        )
-        return (resp.output_text or "").strip()
-    except Exception as ex:
-        print(f"[warn] OpenAI error: {ex}", file=sys.stderr)
-        return ""
+    # Guardrail system message (keeps tone + constraints tight)
+    sys_msg = (
+        "You are writing a short, spoken news brief for a Boston audience.\n"
+        "Rules:\n"
+        "- Lead with the most important hard news; avoid sports first unless it's city-scale significance.\n"
+        "- Always be factual and neutral. Absolutely no opinions, condolences, or speculation.\n"
+        "- Natural public-radio cadence; attributions should be smooth and conversational "
+        "(e.g., 'The Boston Globe reports …', 'Boston.com notes …', 'B-Side highlights …').\n"
+        "- Keep it tight (about 90–150 seconds when read).\n"
+        "- If greeting/time feel mismatched (e.g., late evening), use a neutral greeting like 'Hello'.\n"
+        "- End with: 'This is an internal beta; AI summarized and voiced this update.'"
+    )
 
-# -------------- ElevenLabs TTS --------------
-def tts_elevenlabs(text: str, attempt_label="main") -> bytes | None:
+    user_msg = (
+        f"DATE_LINE: {date_line}\n"
+        f"GREETING: {greeting}\n\n"
+        "NOTES (bullet points of facts; deduped):\n"
+        f"{outlines}\n\n"
+        "Task: Write the full script as one block of text (no bullets). "
+        "Keep attributions natural and brief. Avoid filler. Do not add condolences. "
+        "Do not claim certainty where the notes don't support it."
+    )
+
+    # Important: some models reject 'temperature'. We omit it.
+    # Use max_completion_tokens (not max_tokens) on the Responses API.
+    resp = client.responses.create(
+        model=OPENAI_MODEL,
+        input=[
+            {"role": "system", "content": sys_msg},
+            {"role": "user",   "content": user_msg}
+        ],
+        max_completion_tokens=800
+    )
+
+    txt = (getattr(resp, "output_text", None) or "").strip()
+    return txt
+
+# ---------- ElevenLabs ----------
+def tts_elevenlabs(text: str) -> bytes | None:
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
-        print("[warn] ElevenLabs not configured", file=sys.stderr)
         return None
-
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
     payload = {
         "text": text,
+        "model_id": "eleven_multilingual_v2",
         "voice_settings": {
-            # Tuned to reduce stretched vowels and rushed catch-ups:
-            # slightly lower stability, moderate similarity, mild style,
-            # and disable speaker boost which can exaggerate dynamics.
-            "stability": 0.25,
-            "similarity_boost": 0.7,
-            "style": 0.25,
-            "use_speaker_boost": False
+            "stability": EL_STABILITY,
+            "similarity_boost": EL_SIMILARITY_BOOST,
+            "style": EL_STYLE,
+            "use_speaker_boost": EL_USE_SPEAKER_BOOST
         },
-        "model_id": "eleven_multilingual_v2"
+        "generation_config": {
+            # speed isn’t in voice_settings; it’s here for v2
+            "chunk_length_schedule": [EL_SPEED]
+        }
     }
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "accept": "audio/mpeg",
         "content-type": "application/json"
     }
-    try:
-        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
-        r.raise_for_status()
-        return r.content
-    except Exception as ex:
-        print(f"[warn] ElevenLabs {attempt_label} error: {ex}", file=sys.stderr)
-        return None
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=90)
+    r.raise_for_status()
+    return r.content
 
-def save_bytes(path, data: bytes):
-    with open(path, "wb") as f:
-        f.write(data)
-
-# -------------- Site output --------------
+# ---------- Output helpers ----------
 def write_shownotes(date_str, items):
-    html = ["<html><head><meta charset='utf-8'><title>Boston Briefing – Sources</title></head><body>"]
-    html.append(f"<h2>Boston Briefing – {date_str}</h2>")
-    html.append("<ol>")
+    html = [
+        "<html><head><meta charset='utf-8'><title>Boston Briefing – Sources</title></head><body>",
+        f"<h2>Boston Briefing – {date_str}</h2>",
+        "<ol>"
+    ]
     for it in items[:MAX_ITEMS]:
-        html.append(f"<li><a href='{it['link']}' target='_blank' rel='noopener'>{it['title']}</a> – {it['source']}</li>")
+        html.append(
+            f"<li><a href='{it['link']}' target='_blank' rel='noopener'>{it['title']}</a> – {it['source']}</li>"
+        )
     html.append("</ol></body></html>")
     notes_dir = os.path.join(PUBLIC_DIR, "shownotes")
     os.makedirs(notes_dir, exist_ok=True)
     with open(os.path.join(notes_dir, f"{date_str}.html"), "w", encoding="utf-8") as f:
         f.write("\n".join(html))
 
-def write_index():
-    html = f"""<html><head><meta charset='utf-8'><title>Boston Briefing</title></head>
-<body>
-  <h1>Boston Briefing</h1>
-  <p><strong>Internal beta — do not share externally.</strong></p>
-  <p>Podcast RSS: <a href="{PUBLIC_BASE_URL}/feed.xml">{PUBLIC_BASE_URL}/feed.xml</a></p>
-  <p>Shownotes: <a href="{PUBLIC_BASE_URL}/shownotes/">Open folder</a></p>
-</body></html>"""
-    with open(os.path.join(PUBLIC_DIR, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
-
 def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
     title = "Boston Briefing"
-    desc = "A short, factual Boston news briefing."
-    link = PUBLIC_BASE_URL
-    last_build = format_datetime(pub_dt)
-
+    desc  = "A short, factual Boston news briefing."
+    link  = PUBLIC_BASE_URL or ""
+    last_build = pub_dt.astimezone().strftime("%a, %d %b %Y %H:%M:%S %z")
     item_title = pub_dt.strftime("Boston Briefing – %Y-%m-%d")
     guid = episode_url or item_title
 
-    # Build enclosure separately to avoid nested f-string/escape issues
-    enclosure = ""
-    if episode_url:
-        enclosure = f'<enclosure url="{episode_url}" length="{filesize}" type="audio/mpeg"/>'
-
-    feed = (
-f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
-  <channel>
-    <title>{title}</title>
-    <link>{link}</link>
-    <language>en-us</language>
-    <description>{desc}</description>
-    <itunes:author>Boston Briefing</itunes:author>
-    <itunes:explicit>false</itunes:explicit>
-    <lastBuildDate>{last_build}</lastBuildDate>
-
-    <item>
-      <title>{item_title}</title>
-      <description>{desc}</description>
-      <link>{episode_url or link}</link>
-      <guid isPermaLink="false">{guid}</guid>
-      <pubDate>{last_build}</pubDate>
-      {enclosure}
-    </item>
-  </channel>
-</rss>
-"""
-    )
-    with open(os.path.join(PUBLIC_DIR, "feed.xml"), "w", encoding="utf-8") as f:
-        f.write(feed)
-
-# -------------- Main orchestration --------------
-def main():
-    # Always use Boston local time for filenames & greeting
-    now_bos = dt.datetime.now(ZoneInfo("America/New_York"))
-    date_str = now_bos.strftime("%Y-%m-%d")
-    # Natural time-of-day label for prompt
-    hour = now_bos.hour
-    if 5 <= hour < 12:
-        tod = "morning"
-    elif 12 <= hour < 17:
-        tod = "afternoon"
-    elif 17 <= hour < 22:
-        tod = "evening"
-    else:
-        tod = "late-night"
-
-    # Fetch & prep items
-    items = dedupe(fetch_items())
-    notes, used = notes_block(items)
-    if used == 0:
-        print("[warn] No usable items found; proceeding with minimal script", file=sys.stderr)
-
-    # Load prompt (user-editable file) and draft script with OpenAI
-    prompt_text = load_prompt("prompt.txt", date_label=date_str, tod_label=tod)
-    script = draft_with_openai(prompt_text, notes).strip()
-
-    # Hard fallback: if model yielded nothing, keep it short & factual
-    if not script:
-        script = (
-            f"Good {tod}, it’s {now_bos.strftime('%A, %B %-d, %Y')}. "
-            f"This is the Boston Briefing. Our AI had trouble generating today’s script, "
-            f"so we’ll be back with a full update soon. Thanks for listening."
+    lines = []
+    lines.append('<?xml version="1.0" encoding="UTF-8"?>')
+    lines.append('<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">')
+    lines.append("  <channel>")
+    lines.append(f"    <title>{title}</title>")
+    lines.append(f"    <link>{link}</link>")
+    lines.append("    <language>en-us</language>")
+    lines.append(f"    <description>{desc}</description>")
+    lines.append("    <itunes:author>Boston Briefing</itunes:author>")
+    lines.append("    <itunes:explicit>false</itunes:explicit>")
+    lines.append(f"    <lastBuildDate>{last_build}</lastBuildDate>")
+    lines.append("    <item>")
+    lines.append(f"      <title>{item_title}</title>")
+    lines.append(f"      <description>{desc}</description>")
+    lines.append(f"      <link>{episode_url}</link>")
+    lines.append(f"      <guid isPermaLink=\"false\">{guid}</guid>")
+    lines.append(f"      <pubDate>{last_build}</pubDate>")
+    if episode_url and filesize > 0:
+        lines.append(
+            f"      <enclosure url=\"{episode_url}\" length=\"{filesize}\" type=\"audio/mpeg\"/>"
         )
+    lines.append("    </item>")
+    lines.append("  </channel>")
+    lines.append("</rss>")
+    with open(os.path.join(PUBLIC_DIR, "feed.xml"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
 
-    # Site outputs (always)
+def write_index():
+    # minimal root index so your public base stays handy
+    url = f"{PUBLIC_BASE_URL}/feed.xml" if PUBLIC_BASE_URL else "feed.xml"
+    shownotes = f"{PUBLIC_BASE_URL}/shownotes/" if PUBLIC_BASE_URL else "shownotes/"
+    html = [
+        "<html><head><meta charset='utf-8'><title>Boston Briefing</title></head><body>",
+        "<h1>Boston Briefing</h1>",
+        f"<p>Podcast RSS: <a href=\"{url}\">{url}</a></p>",
+        f"<p>Shownotes: <a href=\"{shownotes}\">Open folder</a></p>",
+        "</body></html>"
+    ]
+    with open(os.path.join(PUBLIC_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write("\n".join(html))
+
+# ---------- Pipeline ----------
+def build_script(items):
+    now = dt.datetime.now().astimezone()
+    greeting, date_line = greeting_and_dateline(now)
+
+    # Outline bullets from first sentences (with source hint)
+    bullets = []
+    used = 0
+    for it in items:
+        if used >= MAX_ITEMS: break
+        body = extract_text(it["link"])
+        if not body:
+            continue
+        sent = first_sentence(body)
+        if len(sent.split()) < 6:
+            continue
+        bullets.append(f"- {sent} (source: {it['source']})")
+        used += 1
+    outlines = "\n".join(bullets)
+
+    # Load your tweakable prompt, then send to OpenAI
+    base_prompt = load_prompt()
+    try:
+        text = generate_script_with_openai(
+            outlines=outlines,
+            date_line=date_line,
+            greeting=greeting
+        )
+        # If you maintain an editor prompt, prepend it here (model reads both)
+        if base_prompt:
+            text = text  # already guided by system+user; keep prompt.txt as your authored guidance source file
+    except Exception as ex:
+        print(f"[warn] OpenAI error: {ex}", file=sys.stderr)
+        text = ""
+
+    # Always write latest script for debugging
+    try:
+        with open(os.path.join(DEBUG_DIR, "latest_script.txt"), "w", encoding="utf-8") as f:
+            f.write(text or "")
+    except Exception:
+        pass
+
+    # If nothing sensible came back, return empty (caller decides fallback)
+    return text.strip(), outlines
+
+def main():
+    items = fetch_items()
+    items = dedupe(items)
+
+    now = dt.datetime.now().astimezone()
+    date_str = now.strftime("%Y-%m-%d")
+
+    script, outlines = build_script(items)
+
+    # Public scaffolding (shownotes & index always)
     write_shownotes(date_str, items)
     write_index()
 
-    # Try ElevenLabs TTS with one retry; if still fails, synthesize a short apology
+    # Determine what to speak
+    if not script or len(script.split()) < 20:
+        voice_text = (
+            "Oops — something went wrong generating today's script. "
+            "Sorry about that. Please email Matt Karolian so I can fix it."
+        )
+    else:
+        voice_text = script
+
+    # Try to synthesize
+    mp3_bytes = None
+    try:
+        mp3_bytes = tts_elevenlabs(voice_text)
+    except Exception as ex:
+        print(f"[warn] ElevenLabs error: {ex}", file=sys.stderr)
+
+    # Write episode & feed
     ep_name = f"boston-briefing-{date_str}.mp3"
     ep_path = os.path.join(EP_DIR, ep_name)
-    mp3_bytes = tts_elevenlabs(script, attempt_label="main")
-    if not mp3_bytes:
-        mp3_bytes = tts_elevenlabs(script, attempt_label="retry")
-
-    if not mp3_bytes:
-        apology = (
-            "Oops, something went wrong generating today’s briefing. "
-            "Sorry about that. Please email Matt Karolian so we can fix it."
-        )
-        mp3_bytes = tts_elevenlabs(apology, attempt_label="apology")
 
     if mp3_bytes:
-        save_bytes(ep_path, mp3_bytes)
+        with open(ep_path, "wb") as f:
+            f.write(mp3_bytes)
         filesize = len(mp3_bytes)
-        ep_url = f"{PUBLIC_BASE_URL}/episodes/{ep_name}"
+        ep_url = f"{PUBLIC_BASE_URL}/episodes/{ep_name}" if PUBLIC_BASE_URL else f"episodes/{ep_name}"
+        build_feed(ep_url, now, filesize)
         print(f"Saved MP3: {ep_path} ({filesize} bytes)")
-        build_feed(ep_url, now_bos, filesize)
     else:
-        print("[warn] No audio produced; publishing feed without enclosure", file=sys.stderr)
-        build_feed("", now_bos, 0)
+        build_feed("", now, 0)
+        print("[warn] No MP3 produced; feed item created without enclosure")
 
 if __name__ == "__main__":
     main()
