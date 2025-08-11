@@ -240,10 +240,14 @@ def write_shownotes(date_str, items):
 
 def write_index():
     url = f"{PUBLIC_BASE_URL}/feed.xml" if PUBLIC_BASE_URL else "feed.xml"
-    html = f"""<html><head><meta charset='utf-8'><title>Boston Briefing</title></head>
-<body>
-  <h1>Boston Briefing</h1>
-  <p>Podcast RSS: <a href="{url}">{url}</a></p>
-  <p>Shownotes: <a href="{(PUBLIC_BASE_URL or '.').rstrip('/')}/shownotes/">Open folder</a></p>
-</body></html>"""
-    (PUBLIC_DIR / "index.html
+    shownotes_base = (PUBLIC_BASE_URL or ".").rstrip("/")
+    lines = [
+        "<html><head><meta charset='utf-8'><title>Boston Briefing</title></head>",
+        "<body>",
+        "  <h1>Boston Briefing</h1>",
+        f'  <p>Podcast RSS: <a href="{url}">{url}</a></p>',
+        f'  <p>Shownotes: <a href="{shownotes_base}/shownotes/">Open folder</a></p>',
+        "</body></html>",
+        "",
+    ]
+    (PUBLIC_DIR / "index.html").write_text("\n".join(lines), encoding="utf-8")
