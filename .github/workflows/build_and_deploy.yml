@@ -1,8 +1,10 @@
 name: Build & Deploy
+
 on:
+  workflow_dispatch:
+  # hourly (at minute 5). change if you want a different schedule
   schedule:
-    - cron: "5 * * * *"   # every hour at :05
-  workflow_dispatch: {}
+    - cron: "5 * * * *"
 
 permissions:
   contents: read
@@ -18,21 +20,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
       - name: Build episode
         env:
-       env:
-  ELEVEN_API_KEY: ${{ secrets.ELEVEN_API_KEY }}
-  ELEVEN_VOICE_ID: ${{ secrets.ELEVEN_VOICE_ID }}
-  PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # <-- add this line
-  OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}       # <-- add this line
+          ELEVEN_API_KEY: ${{ secrets.ELEVEN_API_KEY }}
+          ELEVEN_VOICE_ID: ${{ secrets.ELEVEN_VOICE_ID }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           MAX_ITEMS: "12"
         run: python main.py
-      - uses: actions/upload-pages-artifact@v3
+
+      - name: Upload static site
+        uses: actions/upload-pages-artifact@v3
         with:
           path: public
 
