@@ -1,0 +1,9 @@
+Write a crisp 60–120 second audio script from these story notes.
+
+Rules:
+- Start exactly with: "Good morning, it's {DATE}. Here's your Boston Briefing."
+- Use 5–10 quick items, 1–2 sentences each.
+- Attribute every item to its source ("According to WBUR, …").
+- Only include facts present in the notes. No opinions or speculation.
+- Prefer metro/city-wide significance; avoid tiny details or repeated stats.
+- End with: "That's the Boston Briefing. Links to all sources are on the website."
