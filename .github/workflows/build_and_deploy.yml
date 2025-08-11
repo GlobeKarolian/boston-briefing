@@ -24,9 +24,12 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Build episode
         env:
-          ELEVEN_API_KEY: ${{ secrets.ELEVEN_API_KEY }}
-          ELEVEN_VOICE_ID: ${{ secrets.ELEVEN_VOICE_ID }}
-          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+       env:
+  ELEVEN_API_KEY: ${{ secrets.ELEVEN_API_KEY }}
+  ELEVEN_VOICE_ID: ${{ secrets.ELEVEN_VOICE_ID }}
+  PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # <-- add this line
+  OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}       # <-- add this line
           MAX_ITEMS: "12"
         run: python main.py
       - uses: actions/upload-pages-artifact@v3
