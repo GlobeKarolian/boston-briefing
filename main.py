@@ -110,15 +110,23 @@ def tts_elevenlabs(text: str) -> bytes | None:
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
     payload = {
         "text": text,
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
-        "model_id": "eleven_multilingual_v2"
+        "voice_settings": {
+            "stability": 0.35,
+            "similarity_boost": 0.9,
+            "style": 0.65,
+            "use_speaker_boost": True
+        },
+        "model_id": "eleven_multilingual_v2",
+        # If your account supports it, this speeds up delivery slightly:
+        # "voice_speed": 1.12
     }
     headers = {
         "xi-api-key": ELEVEN_API_KEY,
         "accept": "audio/mpeg",
         "content-type": "application/json"
     }
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+    # Increased timeout from 60 -> 180 seconds
+    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=180)
     r.raise_for_status()
     return r.content
 
@@ -142,7 +150,6 @@ def build_feed(episode_url: str, pub_dt: dt.datetime, filesize: int):
     item_title = pub_dt.strftime("Boston Briefing – %Y-%m-%d")
     guid = episode_url or item_title
 
-    # Build the enclosure separately (avoids nested f-string issues)
     enclosure = ""
     if episode_url:
         enclosure = f'<enclosure url="{episode_url}" length="{filesize}" type="audio/mpeg"/>'
@@ -190,6 +197,13 @@ def main():
     script, _lines = build_script(items)
     today = dt.datetime.now().astimezone()
     date_str = today.strftime("%Y-%m-%d")
+
+    # NEW: show and save the script so you can review it
+    print("\n--- SCRIPT TO READ ---\n")
+    print(script)
+    print("\n--- END SCRIPT ---\n")
+    with open(os.path.join(PUBLIC_DIR, f"script-{date_str}.txt"), "w", encoding="utf-8") as f:
+        f.write(script)
 
     write_shownotes(date_str, items)
     write_index()
