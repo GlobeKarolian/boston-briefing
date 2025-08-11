@@ -1,0 +1,26 @@
+:root {
+  --bg:#0b0c10; --card:#16181d; --text:#e8edf1; --muted:#9aa6b2;
+  --accent:#3aa0ff; --accent-2:#2a3340;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+.wrap{max-width:720px;margin:0 auto;padding:16px}
+h1{margin:12px 0 2px;font-size:1.6rem}
+h2{margin:0 0 6px;font-size:1.2rem}
+h3{margin:18px 0 8px;font-size:1rem;color:var(--muted)}
+.beta{color:var(--muted);margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--accent-2);border-radius:14px;padding:16px;margin-top:10px}
+audio{width:100%;margin:10px 0 14px;border-radius:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.btn{display:inline-block;background:var(--accent);color:#001426;text-decoration:none;font-weight:600;padding:10px 14px;border-radius:10px}
+.btn.secondary{background:transparent;border:1px solid var(--accent);color:var(--text)}
+.meta, .disclosure{margin-top:18px}
+.meta ul{padding-left:18px;margin:6px 0}
+.meta li{color:var(--muted)}
+.disclosure p{color:var(--muted);margin:0}
+.foot{opacity:.7;text-align:center;margin:20px auto 40px}
+a{color:#b7d9ff}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f7f9fb;--card:#fff;--text:#0b1a2b;--muted:#5b6b7a;--accent:#136ef6;--accent-2:#dfe7ef}
+  .btn{color:#fff}
+}

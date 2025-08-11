@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Boston Briefing (Internal Beta)</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+  <link rel="alternate" type="application/rss+xml" href="./feed.xml" />
+</head>
+<body>
+  <header class="wrap">
+    <h1>Boston Briefing</h1>
+    <p class="beta">Internal beta • Do not share</p>
+  </header>
+
+  <main class="wrap card">
+    <section id="episode">
+      <h2 id="ep-title">Loading latest episode…</h2>
+
+      <audio id="player" controls preload="none">
+        <p>Your browser doesn’t support audio playback. Download via the link below.</p>
+      </audio>
+
+      <div class="row">
+        <a id="download" class="btn" href="#" download>Download MP3</a>
+        <a id="shownotes" class="btn secondary" href="./shownotes/" target="_blank" rel="noopener">Shownotes</a>
+      </div>
+    </section>
+
+    <section class="meta">
+      <h3>Subscribe</h3>
+      <ul>
+        <li><a href="./feed.xml">Copy the RSS feed</a></li>
+        <li>Paste into Apple Podcasts, Overcast, et al.</li>
+      </ul>
+    </section>
+
+    <section class="disclosure">
+      <p>
+        This briefing is part of an internal beta. Stories were summarized by AI and the script was AI-written.
+        The voice you are hearing is an AI recreation of Matt Karolian’s voice.
+      </p>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <small>© <span id="year"></span> Boston Briefing • Feedback: <a href="mailto:Matt@Boston.com">Matt@Boston.com</a></small>
+  </footer>
+
+  <script src="./assets/app.js" defer></script>
+</body>
+</html>
