@@ -267,6 +267,7 @@ def write_index():
     with open(os.path.join(PUBLIC_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
+
 # -----------------------------
 # Main
 # -----------------------------
